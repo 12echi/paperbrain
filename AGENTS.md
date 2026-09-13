@@ -1,6 +1,6 @@
 # AGENTS.md — PaperBrain Copilot
 
-> 生产级仓库：唯一验收依据是 `学术文献全通读与论文写作系统_落地执行方案v5.0.txt`（v4.0/v3.0 仅留底）；代码与测试必须落实并阻断未满足的 v5 门禁，不得反过来绕过规范。实现入口：`paperbrain/{ids,verifier,budget,graph,vector_store,preflight,sections,passes,memory,outline,pipeline}.py`。界面：`python3 -m paperbrain.server --port 8000`（`/api/health` 看工具状态，steps ①出大纲②确认生成）。门禁：`python3 -m unittest discover -s tests -v` 全过，最终统一跑 `python3 tools/release_gate.py`；M1/M3/M5 分别可用 `tools/predict_m1.py` / `tools/predict_m3.py` / `tools/predict_m5.py` 生成带源 SHA/案例与策略 SHA 的预测；统一门禁会从 M1 golden 的源路径现场解析，并现场重生成确定性的 M3/M5 预测，不信任任何外部 pred。其余量化工具为 `tools/calibrate.py`、`tools/validate_m6.py` 与 `tools/validate_output_quality.py`。未提供 30 篇 M1 golden、M3/M5 golden、50 对引文标定、50 篇 M6 样本或 M8 双人工评审报告时只能输出未验收/待复核，不能宣称生产完成。
+> 生产级仓库：本文件记录当前开发约束、模块契约与验收门禁；代码与测试必须阻断未满足的门禁，不得反过来绕过规范。实现入口：`paperbrain/{ids,verifier,budget,graph,vector_store,preflight,sections,passes,memory,outline,pipeline}.py`。界面：`python3 -m paperbrain.server --port 8000`（`/api/health` 看工具状态，steps ①出大纲②确认生成）。门禁：`python3 -m unittest discover -s tests -v` 全过，最终统一跑 `python3 tools/release_gate.py`；M1/M3/M5 分别可用 `tools/predict_m1.py` / `tools/predict_m3.py` / `tools/predict_m5.py` 生成带源 SHA/案例与策略 SHA 的预测；统一门禁会从 M1 golden 的源路径现场解析，并现场重生成确定性的 M3/M5 预测，不信任任何外部 pred。其余量化工具为 `tools/calibrate.py`、`tools/validate_m6.py` 与 `tools/validate_output_quality.py`。未提供 30 篇 M1 golden、M3/M5 golden、50 对引文标定、50 篇 M6 样本或 M8 双人工评审报告时只能输出未验收/待复核，不能宣称生产完成。
 
 ## 项目意图与架构（5 阶段，见方案第二章）
 
