@@ -1,0 +1,24 @@
+FlashAttention-v2: Faster Attention with Long-sequence Hallucination Study
+
+Abstract
+We propose FlashAttention-v2, an Algorithm that improves upon Transformer baseline.
+Evaluated on HumanEval and ImageNet-1k, it improves BLEU-4 by 2 points and reduces Latency.
+It requires Cross-Entropy with Label Smoothing and is vulnerable to Quadratic Memory Footprint.
+See Figure 2 and Table 1 for main results.
+
+1. Introduction
+Long-sequence Hallucination is a key Problem. Prior work fails on long contexts.
+Our contribution: faster attention with lower memory. Conclusion preview: gains hold on benchmarks.
+
+2. Methodology
+Model Formulation: we modify attention with tiling. Loss is Cross-Entropy with Label Smoothing.
+The model requires careful IO scheduling. See Sec 3.2 for settings.
+
+3. Experiments
+Evaluation: on HumanEval BLEU-4 improves 2 points. Ablation in Table 1 shows tiling matters.
+Figure 2 shows latency vs length. Compared to Transformer baseline, our method wins.
+Limitation: Quadratic Memory Footprint remains for extreme lengths.
+
+4. Conclusion
+FlashAttention-v2 improves upon Transformer, evaluated on HumanEval and ImageNet-1k.
+Future work addresses Quadratic Memory Footprint.

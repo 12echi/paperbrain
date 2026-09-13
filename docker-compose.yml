@@ -1,0 +1,22 @@
+services:
+  paperbrain:
+    build: .
+    ports:
+      # 默认只暴露给本机；服务无账户认证，不得直接发布到局域网/公网。
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./out:/app/out
+    # v5.0 资源硬限: 容器 3GB / 2CPU, 超限自保不卡宿主
+    mem_limit: 3g
+    cpus: 2.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    environment:
+      # 真 LLM 精读填这里 (不填则离线规则式):
+      # PAPERBRAIN_API_KEY: ${PAPERBRAIN_API_KEY}
+      # PAPERBRAIN_MODEL: gpt-4o-mini
+      PAPERBRAIN_RPS: "2"

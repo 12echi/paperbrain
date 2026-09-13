@@ -1,0 +1,15 @@
+{
+  "calibrated": false,
+  "scorer": "tfidf-corpus",
+  "prompt_version": "v5.0",
+  "n_pairs": 25,
+  "n_pos": 5,
+  "n_neg": 20,
+  "pos_min": 0.861,
+  "pos_p10": 0.861,
+  "neg_max": 0.779,
+  "neg_p95": 0.779,
+  "review_th": 0.5,
+  "pass_th": 0.81,
+  "note": "仅为 demo 诊断快照；少于 50 对，不得用于生产 CLEAN 放行"
+}

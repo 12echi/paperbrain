@@ -1,0 +1,213 @@
+================================================================================
+          学术文献全通读、多模态知识沉淀与论文写作助手 (PaperBrain Copilot)
+               【工程级防坑加固与落地执行方案 v4.0 —— 高标准版】
+================================================================================
+更新时间：2026-09-09 / 基于 v3.0 审计硬化 / 目标：可生产、可评测、可回放
+v3.0 的 6 陷阱方向保留，v4.0 只做一件事：把口号变成可验收的硬门禁。
+凡本方案写了数字的，一律配评测集 + 失败回退，不达标不入库、不生成。
+
+--------------------------------------------------------------------------------
+零、v4.0 相对 v3.0 的提标总览（先看数字）
+--------------------------------------------------------------------------------
+- 解析：两栏+公式还原率 95% → 98%，表格单元格 ≥99%，Caption+上下文绑定率 100%
+  （原来无评测集，现强制 30 篇 golden set，见第六章）
+- Token：单篇 ≤15k → ≤12k（纯文本部分，图另计但限额）；缓存命中复跑 ≤2k
+- 内存：常驻 ≤4GB → ≤3GB，峰值 ≤6GB，Docker hard limit，超限 kill + 降级，不卡死
+- 引文：存在性检查 → 存在性 100% + 语义蕴含 ≥0.82 + 图表编号精确命中，三者缺一即 UNVERIFIED
+- 图谱：无泛词堆积（定性）→ 泛词率 <1%，别名合并准确率 ≥97%，Schema 外关系 0 容忍
+- 批量：50 篇能跑（定性）→ 50 篇 P95 无崩、断点续跑、幂等、每篇成本台账
+- 新增：隐私开关（默认本地优先，上云需显式授权）、全链路追踪 ID、失败分级回退
+
+--------------------------------------------------------------------------------
+一、ID 与数据规范（v3.0 缺失，v4.0 强制前置，不规范后面全错）
+--------------------------------------------------------------------------------
+1. PaperID：`{YYYY}_{Venue}_{NN}`，如 `2024_NeurIPS_01`，入库不可变，大小写敏感。
+2. Sec 归一化：`Sec 3.2` / `Sec.3.2` / `sec 3.2` 一律归一为 `3.2`。正则：`sec\.?\s*(\d+(?:\.\d+)*)`。
+3. ChunkID：`{PaperID}_Sec{Sec}_C{NNN}`，如 `2024_NeurIPS_01_Sec3.2_C007`。
+   ground_truth 主键必须是 ChunkID 级或至少 `{PaperID}_{Sec}` 级，禁止只存 PaperID 级。
+4. 图表 ID：`{PaperID}_Fig{ N }` / `_Tab{N}`，Caption 单独存，`figure.image_hash` 去重。
+5. 追踪：每篇 PDF 算 `sha256`，每次 LLM 调用记 `(pdf_sha, section_hash, prompt_version)`，
+   磁盘缓存命中则不计 token、不调云端。
+
+--------------------------------------------------------------------------------
+二、预处理分流 v4.0（双轨 → 三轨 + 分级回退）
+--------------------------------------------------------------------------------
+【v3.0 问题】：>90% 走标准、否则 OCR，非黑即白；公式校验没定主次；复合图强行切分。
+【v4.0 标准】：
+1. 三轨路由（PyMuPDF 先检）：
+   - 文本率 >90% → 标准版面分析（Docling/MinerU 轻量模式）
+   - 50%~90% → 混合：标准解析 + OCR 只补低置信页（按页回退，不是整篇回退）
+   - <50% → 深度 OCR 管道，全篇不进高精版面分析
+2. 公式门禁：
+   - 主校验 `katex`（语法），辅校验 `sympy.parse_latex`（语义可解析性）。
+   - 双 fail → 不丢弃，回退为行内纯文本并打标 `$$[FORMULA_UNVERIFIED]$$`，禁止当干净公式入库。
+3. 复合子图（提高标准：宁可不切，不可切错）：
+   - 步骤：caption 正则拆 `\(a\)|\(b\)|a\.|b\.` → 图内 `(a)(b)(c)` 标签 OCR → BBox IoU 配对。
+   - 仅当 标签置信度高 且 IoU>0.5 且 sub-caption 数量 == 切块数量 才拆；否则保留整图 +
+     `⚠️ [需人工拆图]`，禁止硬切污染库。
+4. 章节切分（v3.0 最大循环依赖，v4.0 必须解）：
+   - 正则+版面（字号/加粗）先切，低置信节用小模型二判，输出每节 `confidence`。
+   - 切分失败 → 整篇降级为只跑 Pass1（宏观），不跑 Pass2/3，不伪造 Method/Exp 纪要。
+
+--------------------------------------------------------------------------------
+三、分章投喂 v4.0（Token ≤12k + 图限额 + 队列）
+--------------------------------------------------------------------------------
+预算（纯文本 12k 硬顶）：
+- Pass1 宏观 Title+Abstract+Intro+Conclusion ≤2.5k
+- Pass2 微观 Method ≤3.5k
+- Pass3 消融 Exp+Tables+Figures ≤4k 文本 + 图（每图最长边 ≤1024px，单次调用 ≤3 图，去重 hash）
+- Pass4 批判 只读前三遍纪要+引用链 ≤2k，不读原文；纪要必须带 ChunkID 链，否则 Pass4 拒绝执行
+- 缓存命中复跑 ≤2k（只跑 Pass4 + 增量）
+
+并发与限流（v3.0 缺失）：
+- Pass2/3 可并行，Pass4 必须等两者完成；50 篇批量走 token-bucket 队列 + 指数退避，
+  触发 TPM/RPM 则降并发不丢任务；所有调用幂等可重放。
+
+--------------------------------------------------------------------------------
+四、图谱 v4.0（白名单 + 归一化流水线，泛词率 <1%）
+--------------------------------------------------------------------------------
+Schema 不变（6 实体 + 5 关系，见 AGENTS.md），但加三道硬门：
+1. 抽取约束：LLM 必须输出 JSON Schema 约束解码，Schema 外实体/关系直接拒收，不做模糊映射。
+2. 归一流水线（入库前强制）：
+   小写归一 → 别名表（如 FlashAttention 2 → FlashAttention-v2）→ embedding 去重
+   （cos>0.93 合并）→ 泛词黑名单（model/data/performance/accuracy 等）拦截计数。
+3. 指标：泛词率 <1%，别名合并准确率 ≥97%（golden 集抽查），关系越界 0 容忍。
+   LightRAG + SQLite/DuckDB 不变；embedding 可走云端，但必须可 mock，离线可跑通测试。
+
+--------------------------------------------------------------------------------
+五、引文门禁 v4.0（两阶段 → 三阶段，彻底堵张冠李戴）
+--------------------------------------------------------------------------------
+引文格式扩展统一为：
+  `[Ref: <PaperID>, Sec <X.Y>]` / `[Ref: <PaperID>, Fig <N>]` / `[Ref: <PaperID>, Tab <N>]`
+  如 `[Ref: 2024_NeurIPS_01, Sec 3.2]` `[Ref: 2024_NeurIPS_01, Fig 2]`
+
+三阶段校验（必须串行）：
+1. 存在性：归一化 key 必须在 ground_truth，否则 UNVERIFIED。
+2. 编号精确：Fig/Tab 编号必须在对应 Sec 的图表清单里，否则 UNVERIFIED。
+3. 语义蕴含：claim vs source_excerpt 的蕴含分 ≥0.82（embedding cos 或 NLI，二选一可配置），
+   低于阈值标 `⚠️ [待核实引文]`，绝不静默放行。
+
+空引用语义：零引用返回 `NO_CITATION`，不与 `CLEAN` 混淆；`is_clean` 仅当有引用且全 PASS 才为 True。
+
+代码见第三章 v4.0（替代 v3.0 原型，原型仅查存在性，已废弃）。
+
+--------------------------------------------------------------------------------
+六、长文生成 v4.0（STORM + 全局一致性硬约束）
+--------------------------------------------------------------------------------
+1. 先出三级大纲 + 每节核心文献 ChunkID 清单 → 用户确认（版本化，可 diff，可回滚）。
+2. 按小节分块生成，每块必须自带引用，不允许无引用长段落。
+3. 全局一致性 Agent 必做：术语表统一、引用去重、时态风格统一、过渡句注入、
+   跨节矛盾检查（Contradicts 关系复用）。任一项失败打回对应小节，不全局重写。
+
+--------------------------------------------------------------------------------
+七、Mac 资源 v4.0（常驻 ≤3GB，超限自保）
+--------------------------------------------------------------------------------
+- 本地只跑 Docling/MinerU 轻量，Docker 启动加 `--memory=3g --cpus=2`，服务懒启动 + 健康检查。
+- 多模态精读默认走云端 VL（Qwen2.5-VL / Claude），上云需显式授权开关，PDF 去重用 hash；
+  台账：每篇记文本 token + 视觉调用次数 + 费用，50 篇批量可导出 CSV。
+- 存储只用 SQLite/DuckDB；本地 7B-VL、MinerU 全量禁止默认安装，引入需专项说明内存与成本。
+
+--------------------------------------------------------------------------------
+第三章（替代）：确定性引文后置校验器 v4.0
+--------------------------------------------------------------------------------
+```python
+import re
+from typing import Dict, List, Callable, Optional
+
+# 可注入语义打分器，便于离线 mock：score(claim_context, source) -> [0,1]
+SemanticScorer = Callable[[str, str], float]
+
+def norm_sec(s: str) -> str:
+    m = re.search(r"sec\.?\s*(\d+(?:\.\d+)*)", s, re.I)
+    return m.group(1) if m else s.strip().lower()
+
+def norm_figtab(s: str) -> str:
+    # "Fig 2" / "Figure 2" / "Tab 3" / "Table 3" -> "fig2" / "tab3"
+    m = re.search(r"(fig(?:ure)?|tab(?:le)?)\s*(\d+)", s, re.I)
+    if m:
+        kind = "fig" if m.group(1).lower().startswith("fig") else "tab"
+        return f"{kind}{m.group(2)}"
+    return s.strip().lower()
+
+class CitationVerifierV4:
+    # ground_truth: key -> source text, key 形如 "2024_NeurIPS_01_3.2" / "..._fig2"
+    # fig_index: "PaperID_Sec" -> {"figs": ["fig2",...], "tabs": ["tab1",...]}
+    def __init__(self, ground_truth_chunks: Dict[str, str],
+                 fig_index: Optional[Dict[str, Dict[str, List[str]]]] = None,
+                 semantic_scorer: Optional[SemanticScorer] = None,
+                 threshold: float = 0.82):
+        self.gt = {k.strip(): v for k, v in ground_truth_chunks.items()}
+        self.fig_index = fig_index or {}
+        self.scorer = semantic_scorer
+        self.th = threshold
+
+    def verify_draft(self, draft_text: str) -> Dict:
+        pat = r"\[Ref:\s*([^,\]]+),\s*([^\]]+)\]"
+        reports = []
+        for m in re.finditer(pat, draft_text):
+            raw_ref, raw_loc = m.group(1).strip(), m.group(2).strip()
+            # loc 可能含 "Sec 3.2, Fig 2"，拆开处理
+            parts = [p.strip() for p in raw_loc.split(",")]
+            sec_norm, fig_norm = None, None
+            for p in parts:
+                if re.search(r"sec", p, re.I):
+                    sec_norm = norm_sec(p)
+                elif re.search(r"fig|tab", p, re.I):
+                    fig_norm = norm_figtab(p)
+            if sec_norm is None and fig_norm is None:
+                # 纯 "3.2" 视为 sec
+                sec_norm = norm_sec(raw_loc)
+
+            key = f"{raw_ref}_{sec_norm}" if sec_norm else f"{raw_ref}_{fig_norm}"
+            if key not in self.gt:
+                reports.append({"citation": m.group(0), "status": "UNVERIFIED",
+                                "reason": f"{key} 不在有效片段中"})
+                continue
+            # 编号精确检查
+            if fig_norm and sec_norm:
+                idx = self.fig_index.get(f"{raw_ref}_{sec_norm}", {})
+                all_figs = (idx.get("figs", []) + idx.get("tabs", []))
+                if fig_norm not in all_figs:
+                    reports.append({"citation": m.group(0), "status": "UNVERIFIED",
+                                    "reason": f"{fig_norm} 不在 {raw_ref} Sec {sec_norm} 图表清单"})
+                    continue
+            # 语义蕴含检查（无 scorer 则降级为存在性通过，但标记 scorer 缺失）
+            src = self.gt[key]
+            if self.scorer is None:
+                reports.append({"citation": m.group(0), "status": "PASS",
+                                "source_excerpt": src[:150] + "...",
+                                "warn": "no-semantic-scorer"})
+                continue
+            ctx_start = max(0, m.start() - 300)
+            claim_ctx = draft_text[ctx_start:m.end() + 200]
+            score = self.scorer(claim_ctx, src)
+            if score < self.th:
+                reports.append({"citation": m.group(0), "status": "UNVERIFIED",
+                                "reason": f"语义蕴含 {score:.2f} < {self.th}",
+                                "source_excerpt": src[:150] + "..."})
+            else:
+                reports.append({"citation": m.group(0), "status": "PASS",
+                                "score": round(score, 3),
+                                "source_excerpt": src[:150] + "..."})
+        if not reports:
+            return {"status": "NO_CITATION", "is_clean": False, "report": []}
+        clean = all(r["status"] == "PASS" and "warn" not in r for r in reports)
+        return {"status": "CLEAN" if clean else "DIRTY",
+                "is_clean": clean, "report": reports}
+```
+
+--------------------------------------------------------------------------------
+八、落地里程碑与门禁清单 v4.0（全部可测，不达标阻塞）
+--------------------------------------------------------------------------------
+- [ ] M1 解析：30 篇 golden（10 现代两栏+10 扫描+10 复杂图表）还原率 ≥98%，表格 ≥99%，Caption 绑定 100%
+- [ ] M2 成本：单篇纯文本 ≤12k，图 ≤9 张/篇去重后，缓存命中复跑 ≤2k，50 篇台账可导出
+- [ ] M3 图谱：泛词率 <1%，别名合并 ≥97%，Schema 外 0 容忍，LightRAG 可 mock 离线测
+- [ ] M4 引文：存在性 100% + 蕴含 ≥0.82 + Fig/Tab 精确命中；零引用报 NO_CITATION 不冒充 CLEAN
+- [ ] M5 生成：大纲版本化可回滚，分节引用覆盖 100%，全局术语一致 100%
+- [ ] M6 资源：常驻 ≤3GB、峰值 ≤6GB，Docker限额，50 篇 P95 无崩、断点续跑
+- [ ] M7 隐私：上云开关默认关，开启需显式授权，费用台账 per-paper 可查
+
+================================================================================
+v4.0 可直接开工：先做 M1+M4 最小闭环（分流→分章→Pass1纪要→V4校验器存在性+语义mock），
+再做 M2/M3/M5/M6。不接受无 golden 集、无回退、无台账的“完成”。
+================================================================================

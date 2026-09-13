@@ -1,0 +1,24 @@
+SparseAttention: Taming Quadratic Memory with Gated Kernels
+
+Abstract
+We present SparseAttention, an Algorithm that improves upon FlashAttention-v2.
+Evaluated on ImageNet-1k, top-1 accuracy rises 1.8 points with 40% lower Latency.
+Training uses Cross-Entropy with Label Smoothing. See Figure 1 and Table 2.
+
+1. Introduction
+Quadratic Memory Footprint limits long-sequence modeling. This Problem motivates sparsity.
+Our contribution is a gated kernel with provable error bounds.
+
+2. Methodology
+Model Formulation: attention weights $A = softmax(QK^T / \\sqrt{d})$ are sparsified
+by top-k masking. The loss $L = -\\sum y \\log p$ is Cross-Entropy with Label Smoothing.
+A broken formula follows $\\zzz{{{@@@$.
+The model Requires block-sparse kernels and is Vulnerable_To irregular sparsity.
+
+3. Experiments
+Evaluation on ImageNet-1k: accuracy +1.8 points, Latency -40%.
+Ablation in Table 2 confirms gating matters. Figure 1 (a) shows throughput, (b) shows memory.
+Our method Improves_Upon FlashAttention-v2 and was Evaluated_On ImageNet-1k.
+
+4. Conclusion
+SparseAttention reduces Quadratic Memory Footprint with minor accuracy trade-offs.

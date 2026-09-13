@@ -1,0 +1,25 @@
+{
+  "schema": "paperbrain-graph-policy-v1",
+  "reviewed_at": null,
+  "aliases": {
+    "flashattention 2": "FlashAttention-v2",
+    "flashattention-2": "FlashAttention-v2",
+    "imagenet1k": "ImageNet-1k",
+    "imagenet-1k": "ImageNet-1k",
+    "bleu4": "BLEU-4",
+    "bleu-4": "BLEU-4"
+  },
+  "blacklist": [
+    "model",
+    "data",
+    "performance",
+    "accuracy",
+    "algorithm",
+    "method",
+    "result",
+    "paper",
+    "experiment",
+    "dataset",
+    "metric"
+  ]
+}

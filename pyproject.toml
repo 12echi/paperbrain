@@ -1,0 +1,18 @@
+[project]
+name = "paperbrain-copilot"
+version = "5.0.0"
+description = "PaperBrain Copilot production core (Mac-light, stdlib-first)"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.optional-dependencies]
+pdf = ["pymupdf==1.26.5"]
+formulas = ["sympy==1.14.0", "antlr4-python3-runtime==4.11.*"]
+figures = ["opencv-python-headless"]
+vss = ["duckdb==1.4.5"]
+eval = ["rapidfuzz==3.13.0"]
+ocr = []  # 需系统包: brew install tesseract
+vl = []   # 经本机 opencode CLI, 无 pip 依赖
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

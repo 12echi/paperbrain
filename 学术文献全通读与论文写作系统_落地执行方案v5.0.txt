@@ -1,0 +1,131 @@
+================================================================================
+          学术文献全通读、多模态知识沉淀与论文写作助手 (PaperBrain Copilot)
+               【落地执行方案 v5.0 —— 生产级 (Production Ready)】
+================================================================================
+更新时间：2026-09-09 / 基于 v4.0 高标准审计的 7 个 P0 修复 / 可执行代码为准
+v4.0 把口号变成数字；v5.0 把数字变成可测门禁 + 可跑代码。
+生产 DoD：17 项对抗测试全过 + M1 有 score.py + 双顶预算 + 脏缓存/绕过路全堵。
+
+代码映射（唯一真相）：
+- paperbrain/ids.py      ID归一 + parse_loc + make_cache_key(5元组)
+- paperbrain/verifier.py CitationVerifierV5（三阶段门禁，状态机 CLEAN/DIRTY/NEEDS_REVIEW/NO_CITATION）
+- paperbrain/budget.py   双顶预算 TEXT 12k / VISION 6k / TOTAL 18k + 单Pass限额
+- paperbrain/graph.py    图谱归一 + 别名 + 黑名单 + 可注入相似度去重
+- paperbrain/vector_store.py DuckDB VSS/HNSW 向量索引（无后端时退 BM25，禁止 Python 全表余弦）
+- tools/predict_m1.py    M1 真实离线解析预测生成（源 SHA 绑定；不把路径写入预测）
+- tools/score_m1.py      M1 评分口径（文本/表格/Caption绑定）
+- tools/predict_m5.py    M5 真实矛盾检测预测（案例 SHA 绑定，不读取 expected 标签）
+- tools/predict_m3.py    M3 真实图谱清洗预测（案例 SHA + graph policy SHA 绑定）
+- tools/validate_output_quality.py M8 当前产物双人工独立质量评审（源/产物 SHA 绑定）
+- tools/release_gate.py  M1-M8 统一发布审计（缺金标/外部测量/人工评审一律 FAIL）
+- tests/test_verifier_v5.py  17 项门禁测试，离线可跑
+
+--------------------------------------------------------------------------------
+一、ID 与缓存（v4.0 补丁的生产固化）
+--------------------------------------------------------------------------------
+1. PaperID `{YYYY}_{Venue}_{NN}` 大小写敏感入库；校验时精确优先、小写二次命中标
+   NEEDS_REVIEW + WARN_CASE_DRIFT，不直接 PASS（防模型大小写漂移刷过）。
+2. Sec 归一见 ids.norm_sec：Sec 3.2/Sec.3.2/3.2→3.2；Sec A.1/Appendix A.1/附录A.1→A.1。
+3. Fig/Tab 归一见 ids.norm_figtab：Fig 2/Figure 2/图2→fig2；Tab 3/Table 3/表3→tab3。
+4. ChunkID `{PaperID}_Sec{Sec}_C{NNN}`；ground_truth 主键至少 `{PaperID}_{Sec|Fig}` 级。
+5. 缓存键强制 5 元组 `(pdf_sha, section_hash, prompt_version, model_version, embedding_version)`，
+   见 make_cache_key，缺版本抛 ValueError。旧 3 元组缓存一律失效。
+
+--------------------------------------------------------------------------------
+二、预处理分流（生产口径）
+--------------------------------------------------------------------------------
+1. 三轨：>90% 标准；50-90% Hybrid；<50% 全量 OCR。页置信度=最小有效字符置信×
+   可提取文本块/(文本块+图像块)，避免短表格单元格把原生 PDF 误判为扫描件；Hybrid 中仅
+   文本率<70%的页做 OCR，表格线缺失页走 Caption 锚定的局部 text-table 解析。
+2. 公式：katex 主 + sympy 辅；双 fail 打 `$$[FORMULA_UNVERIFIED]$$`，禁当干净入库。
+   注：katex 需 node sidecar，sympy.parse_latex 需 antlr4，均懒加载，缺时降级为纯文本+标记。
+3. 复合图：caption 正则 + 图内(a)(b) OCR + IoU>0.5 + 数量相等才拆，否则整图+`⚠️ [需人工拆图]`。
+4. 章节切分输出每节 confidence；低置信整篇降级只跑 Pass1，不伪造 Method/Exp。
+
+--------------------------------------------------------------------------------
+三、预算双顶（v4.0 假账修复）
+--------------------------------------------------------------------------------
+- 硬顶：TEXT≤12k（输入输出全含，含system/JSON/重试）AND VISION≤6k AND TOTAL≤18k。
+  estimator 见 budget.estimate_vision_tokens：1024px≈1200/图，单图上限2000。
+  M2 原“≤9张/篇”作废，改为“单次调用≤3图、单篇有效视觉≤5图，超量抽样（表格优先转文本）”。
+- 单Pass：P1≤2.5k P2≤3.5k P3文本≤4k P4≤2k；P4 无引用链拒绝执行。
+- 85% 水位预警（warn），硬顶拒绝（fail）；缓存命中复跑 TEXT≤2k。
+- 50篇批量：token-bucket + 指数退避，降并发不丢任务，全幂等，per-paper 台账 CSV
+  （只存 hash/token/费用，不存原文）。
+
+--------------------------------------------------------------------------------
+四、图谱（可测化）
+--------------------------------------------------------------------------------
+- 白名单不变（6实体+5关系），Schema 外拒收计数，0容忍指“越界0入库”而非“模型0越界”。
+- 流水线见 graph.sanitize_entities：归一→别名(JSON维护，种子见 ALIAS_SEED)→
+  embedding去重(cos>0.93，模型版本 pin 死，相似函数可注入 mock)→黑名单拦截计数。
+- 向量索引：SQLite 必须加 sqlite-vss 或 DuckDB VSS 扩展，原生无向量检索跑不通。
+- 抽取约束解码：Outlines/Guidance 二选一，不支持的模型走“拒收→重抽一次→人工队列”。
+- 指标：泛词率<1%，别名合并≥97%（golden抽查），黑名单周审（7天复审一次）。
+
+--------------------------------------------------------------------------------
+五、引文门禁 V5（三阶段 + 状态机，v4 P0 全修）
+--------------------------------------------------------------------------------
+格式：`[Ref: PaperID, Sec X.Y]` / `[Ref: PaperID, Fig N]` / `[Ref: PaperID, Sec X.Y, Fig N]`，
+兼容全/半角括号`[]【】`与逗号`,，`，见 verifier.CIT_PAT。单引用多图表直接 UNVERIFIED
+（必须拆分），纯`[Ref:X, Fig 9]`查全局清单，无清单则 NEEDS_REVIEW 不得 PASS。
+三阶段串行：存在性→编号精确（节内/全局）→语义蕴含≥0.82（embedding cos或NLI可配）。
+claim 上下文按句切（含引用句±1句），不再 300/200 硬切。
+状态：CLEAN(全PASS无warn, is_clean唯一True) / DIRTY(含UNVERIFIED) / NEEDS_REVIEW
+(无UNVERIFIED但有复核) / NO_CITATION(零引用, is_clean=False)。
+无 scorer / scorer 异常一律 NEEDS_REVIEW，禁止显示 PASS（v4 自相矛盾已修）。
+阈值 0.82 为种子值，上线前用 50 对 claim-source 标定 ROC 后可调，调整记入 prompt_version。
+
+--------------------------------------------------------------------------------
+六、长文生成（可测化，砍掉 100% 空话）
+--------------------------------------------------------------------------------
+1. 三级大纲+每节 ChunkID 清单，版本化 diff/回滚，用户确认后才生成。
+2. 门禁：>200字无引用段落即 DIRTY；术语表命中率≥99%（术语表版本化）；
+   Contradicts 矛盾对召回≥90%且负例误报率≤10%（至少20正例+10负例）；过渡句缺失打回对应小节。
+   自动过渡仅可绑定与已确认大纲逐项一致的 `## h1 / h2` 标题序列，且须跟随草稿主体语言；缺失、重复或错序时不得按位置猜测，须保持原稿并令门禁失败。
+3. 原“引用覆盖100%/术语一致100%”作废，改为上述三数。
+4. 用户可见的精读简报与完整深读必须分别执行引文验真并聚合判定；任一产物未通过时不得整体放行。由产物沉淀的学习笔记，还必须同时满足对应产物 CLEAN 与主张级支持检查，缺失验真证据时只能进入 candidate 待裁决队列。
+5. 低置信解析触发全篇 downgrade 时只能形成 Pass1 待复核概览；即使后续引文打分通过，也必须以 LOW_CONFIDENCE_EXTRACTION 阻断 CLEAN，人工修复并重新解析前不得作为高质量产出。
+6. 审稿任务不得用普通综述改标题冒充；须分别输出有证据支持的优点、实质性局限/效度威胁、材料无法回答的问题。任一审稿小节未完成专用生成时以 REVIEW_NOT_GENERATED 阻断，离线摘录仅供人工继续审查。
+7. 确认后大纲必须保持论文身份一致、h1/h2 小节身份唯一且 ChunkID 全部存在；部分无效引用不得静默丢弃。论文身份错配、重复标题或任一无效 ChunkID 均须在生成质量报告中明确阻断。
+8. 系统生成实体写入活跃学习记忆前，必须同时满足图谱策略有效且未到复审期、实体以独立词边界真实出现于源文；否则只进入 candidate。禁止用 BERT 命中 RoBERTa 一类子串证据。
+9. 深读全局综合必须校验 argument_map、positioning、field_view 的 JSON 类型与字段，并在引文提示中使用真实 PaperID；诊断 warning 不得被当作有效综合内容。深读、问答、综合均无有效结果时必须回退完整离线骨架。
+
+--------------------------------------------------------------------------------
+七、资源与隐私（口径修正）
+--------------------------------------------------------------------------------
+- 口径：容器 `docker stats ≤3GB` AND 整机峰值（Activity Monitor）≤8GB；Docker 加
+  `--memory=3g --cpus=2`，服务懒启动+健康检查。原“整机常驻≤3GB”做不到，已修正。
+- 上云默认关，需显式授权；只传切块+Caption 不传整 PDF；剥离 EXIF；台账无原文。
+- 禁默认装 7B-VL/MinerU 全量，引入需内存+成本专项说明。
+
+--------------------------------------------------------------------------------
+八、门禁清单 v5.0（tools/tests 为准，不达标阻塞）
+--------------------------------------------------------------------------------
+- [ ] M1 解析：先用 `python3 tools/predict_m1.py --manifest m1_manifest.json --pred pred.json --work-dir m1_runs`
+      （golden/manifest 每行含唯一 id 与 path/source_path），再运行
+      `python3 tools/score_m1.py --golden golden.json --pred pred.json`；golden/pred 必须源 SHA 一致，
+      表格按实际 cells 逐格比较，Caption 按实际 bound_contexts 比较，阈值判断使用未舍入原值。
+      文本≥0.98 表格≥0.99 Caption绑定≥0.99（30篇：10两栏+10扫描+10复杂图表）。
+      统一 release gate 从 golden 的源路径现场重跑，不信任外部 pred。
+- [ ] M2 成本：budget.check_budget 双顶全过；9图用例必 FAIL，3图用例必 PASS（见测试）
+- [ ] M3 图谱：先用 `python3 tools/predict_m3.py --cases m3_golden.json --pred m3_pred.json`
+      生成绑定案例/策略 SHA 的真实清洗结果；泛词<1% 别名≥97% Schema外0入库；
+      额外或缺失预测一律失败。统一 release gate 会现场重生成，不信任外部 pred。
+- [ ] M4 引文：17 项 `python3 -m unittest discover -s tests -v` 全过；0.82 阈值有标定记录
+- [ ] M5 生成：先用 `python3 tools/predict_m5.py --cases m5_golden.json --pred m5_pred.json`
+      生成绑定案例 SHA 的真实检测结果；>200字无引用即DIRTY；术语≥99%；
+      矛盾召回≥90%且负例误报率≤10%；统一 release gate 会现场重生成预测。
+- [ ] M6 资源：50篇 P95 无崩、断点续跑、幂等；docker stats 口径达标
+- [ ] M7 隐私：上云开关默认关；台账无原文；EXIF 剥离可查
+- [ ] M8 产出质量：`python3 tools/validate_output_quality.py --report output_quality.json`；
+      先以 `python3 tools/validate_output_quality.py --init-manifest output_manifest.json --output output_quality.json`
+      从 `{id,task,source_path,artifact_path}` 清单计算当前文件SHA并生成双评审空模板；模板保留 REVIEW_REQUIRED，禁止直接放行。
+      至少20个当前产物且源/产物SHA匹配，full_read≥10、method≥5、review≥5，每例两名不同人工评审；
+      事实准确、证据可追溯、学习目标质量、洞察深度、可操作性、语言一致性六维逐例及总体均分≥4/5，
+      单维评审分歧≤2分且 blocking_issues 全空。缺报告或只用模型自评一律FAIL。
+
+================================================================================
+开工序：M4(verifier测试已过)→M2(预算已落)→M1(score.py已落，待标30篇)→M3→M5→M6→M7→M8。
+不接受无 score.py、无双顶、无 NEEDS_REVIEW 的“完成”。
+================================================================================
